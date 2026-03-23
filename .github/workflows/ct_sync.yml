@@ -33,6 +33,15 @@ jobs:
           path: .
         continue-on-error: true
 
+      - name: Bootstrap session from secret (first run only)
+        if: ${{ secrets.CT_SESSION_GZ_B64_1 != '' }}
+        run: |
+          if [ ! -f ct_session.json ]; then
+            echo "No session artifact found — bootstrapping from secret..."
+            echo "${{ secrets.CT_SESSION_GZ_B64_1 }}${{ secrets.CT_SESSION_GZ_B64_2 }}" | base64 -d | gunzip > ct_session.json
+            echo "Session restored from secret ($(wc -c < ct_session.json) bytes)."
+          fi
+
       - name: Compute yesterday (IST)
         run: echo "YESTERDAY=$(TZ='Asia/Kolkata' date -d 'yesterday' '+%Y-%m-%d')" >> $GITHUB_ENV
 
