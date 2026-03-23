@@ -1,0 +1,58 @@
+name: CT Sheets Sync
+
+on:
+  schedule:
+    - cron: '30 18 * * *'   # 12:00 AM IST (18:30 UTC)
+    - cron: '30 4 * * *'    # 10:00 AM IST (04:30 UTC)
+  workflow_dispatch:         # manual trigger from GitHub UI
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Write Google credentials
+        run: echo '${{ secrets.GOOGLE_CREDENTIALS_JSON }}' > credentials.json
+
+      - name: Restore session
+        uses: actions/download-artifact@v4
+        with:
+          name: ct-session
+          path: .
+        continue-on-error: true
+
+      - name: Compute yesterday (IST)
+        run: echo "YESTERDAY=$(TZ='Asia/Kolkata' date -d 'yesterday' '+%Y-%m-%d')" >> $GITHUB_ENV
+
+      - name: Run sync
+        env:
+          CT_LOGIN_EMAIL: ${{ secrets.CT_LOGIN_EMAIL }}
+          CT_LOGIN_PASSWORD: ${{ secrets.CT_LOGIN_PASSWORD }}
+          CLEVERTAP_ACCOUNT_ID: ${{ secrets.CLEVERTAP_ACCOUNT_ID }}
+          CLEVERTAP_REGION: ${{ secrets.CLEVERTAP_REGION }}
+          FILTER_CREATOR: ${{ secrets.FILTER_CREATOR }}
+          GOOGLE_CREDENTIALS_JSON: credentials.json
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          WORKSHEET_GID: ${{ secrets.WORKSHEET_GID }}
+        run: python ct_browser_sync.py --start $YESTERDAY --end $YESTERDAY
+
+      - name: Save updated session
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ct-session
+          path: ct_session.json
+          retention-days: 30
+          overwrite: true
