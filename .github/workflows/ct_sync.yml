@@ -34,10 +34,13 @@ jobs:
         continue-on-error: true
 
       - name: Bootstrap session from secret (first run only)
+        env:
+          CT_SESSION_PART1: ${{ secrets.CT_SESSION_GZ_B64_1 }}
+          CT_SESSION_PART2: ${{ secrets.CT_SESSION_GZ_B64_2 }}
         run: |
           if [ ! -f ct_session.json ]; then
             echo "No session artifact found — bootstrapping from secret..."
-            echo "${{ secrets.CT_SESSION_GZ_B64_1 }}${{ secrets.CT_SESSION_GZ_B64_2 }}" | base64 -d | gunzip > ct_session.json
+            printf '%s%s' "$CT_SESSION_PART1" "$CT_SESSION_PART2" | base64 -d | gunzip > ct_session.json
             echo "Session restored from secret ($(wc -c < ct_session.json) bytes)."
           fi
 
