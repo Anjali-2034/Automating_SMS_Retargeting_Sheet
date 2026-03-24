@@ -34,7 +34,6 @@ jobs:
         continue-on-error: true
 
       - name: Bootstrap session from secret (first run only)
-        if: ${{ secrets.CT_SESSION_GZ_B64_1 != '' }}
         run: |
           if [ ! -f ct_session.json ]; then
             echo "No session artifact found — bootstrapping from secret..."
