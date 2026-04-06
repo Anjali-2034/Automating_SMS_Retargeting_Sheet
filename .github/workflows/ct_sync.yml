@@ -70,15 +70,6 @@ jobs:
           WORKSHEET_GID: ${{ secrets.WORKSHEET_GID }}
         run: python ct_browser_sync.py --start $YESTERDAY --end $YESTERDAY
 
-      - name: Run WhatsApp sync
-        env:
-          CLEVERTAP_ACCOUNT_ID: ${{ secrets.CLEVERTAP_ACCOUNT_ID }}
-          CLEVERTAP_REGION: ${{ secrets.CLEVERTAP_REGION }}
-          WA_FILTER_CREATOR: ${{ secrets.WA_FILTER_CREATOR }}
-          GOOGLE_CREDENTIALS_JSON: credentials.json
-          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
-          WA_WORKSHEET_GID: ${{ secrets.WA_WORKSHEET_GID }}
-        run: python wa_browser_sync.py --start $YESTERDAY --end $YESTERDAY
 
       - name: Pack and save updated session
         if: always()
