@@ -33,11 +33,21 @@ jobs:
           path: .
         continue-on-error: true
 
+      - name: Unpack profile artifact
+        run: |
+          if [ -f ct_browser_profile.tar.gz ]; then
+            echo "Unpacking browser profile..."
+            tar -xzf ct_browser_profile.tar.gz
+            echo "Profile restored ($(du -sh ct_browser_profile | cut -f1))."
+          else
+            echo "No profile artifact found."
+          fi
+
       - name: Bootstrap session from secret (first run only)
         env:
           CT_SESSION_GZ_B64: ${{ secrets.CT_SESSION_GZ_B64 }}
         run: |
-          if [ ! -f ct_session.json ]; then
+          if [ ! -f ct_session.json ] && [ ! -d ct_browser_profile ]; then
             echo "No session artifact found — bootstrapping from secret..."
             printf '%s' "$CT_SESSION_GZ_B64" | base64 -d | gunzip > ct_session.json
             echo "Session restored from secret ($(wc -c < ct_session.json) bytes)."
@@ -58,11 +68,21 @@ jobs:
           WORKSHEET_GID: ${{ secrets.WORKSHEET_GID }}
         run: python ct_browser_sync.py --start $YESTERDAY --end $YESTERDAY
 
+      - name: Pack and save updated session
+        if: always()
+        run: |
+          if [ -d ct_browser_profile ]; then
+            tar -czf ct_browser_profile.tar.gz ct_browser_profile/
+            echo "Profile packed ($(du -sh ct_browser_profile.tar.gz | cut -f1))."
+          fi
+
       - name: Save updated session
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ct-session
-          path: ct_session.json
+          path: |
+            ct_session.json
+            ct_browser_profile.tar.gz
           retention-days: 30
           overwrite: true

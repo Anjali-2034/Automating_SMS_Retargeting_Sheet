@@ -8,10 +8,13 @@ CleverTap uses MFA, so sessions are handled in two modes:
 
   --setup   Opens a VISIBLE browser. You log in manually and handle the MFA
             OTP. Tick "Remember this device for 30 days" before submitting.
-            The session is saved to ct_session.json and reused for ~30 days.
+            The full browser profile is saved to ct_browser_profile/ so that
+            CleverTap recognises the same "device" on re-login — meaning after
+            the first MFA you should only need to re-enter your password when
+            the session expires, NOT the OTP again (within the 30-day window).
 
-  (normal)  Loads the saved session, skips login entirely, goes straight to
-            campaigns. If the session has expired, re-run --setup.
+  (normal)  Loads the saved profile/session, skips login entirely, goes
+            straight to campaigns. If the session has expired, re-run --setup.
 
 Add to .env:
     CT_LOGIN_EMAIL=your@email.com
@@ -55,7 +58,8 @@ BASE_URL      = f"https://{CT_REGION}.dashboard.clevertap.com"
 CAMPAIGNS_URL = f"{BASE_URL}/{CT_ACCOUNT_ID}/campaigns/sms"
 
 NAV_TIMEOUT  = 30_000
-SESSION_FILE = Path(__file__).parent / "ct_session.json"
+SESSION_FILE = Path(__file__).parent / "ct_session.json"   # legacy / CI fallback
+PROFILE_DIR  = Path(__file__).parent / "ct_browser_profile"
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -462,11 +466,10 @@ def _setup_with_manual_mfa():
     print("="*60)
 
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(
+        ctx = pw.chromium.launch_persistent_context(
+            user_data_dir=str(PROFILE_DIR),
             headless=False,
             args=["--no-sandbox", "--disable-dev-shm-usage"],
-        )
-        ctx = browser.new_context(
             accept_downloads=True,
             viewport={"width": 1440, "height": 900},
         )
@@ -522,23 +525,25 @@ def _setup_with_manual_mfa():
         time.sleep(2)
         print(f"      Final URL: {page.url}")
 
-        print(f"\n[5/5] Saving session to {SESSION_FILE} ...")
-        ctx.storage_state(path=str(SESSION_FILE))
+        print(f"\n[5/5] Saving session ...")
+        # Persist full browser profile (preserves device fingerprint so CleverTap
+        # won't ask for MFA again on re-login within the 30-day device-remember window).
+        ctx.storage_state(path=str(SESSION_FILE))  # also write ct_session.json for CI
 
         if SESSION_FILE.exists():
-            size = SESSION_FILE.stat().st_size
-            print(f"      Session saved! ({size} bytes)")
+            print(f"      Profile saved to: {PROFILE_DIR}/")
+            print(f"      Session JSON saved to: {SESSION_FILE}")
             print("\n✓ Setup complete. You can now run: python ct_browser_sync.py")
         else:
             print("      ERROR: Session file was not created.")
 
-        browser.close()
+        ctx.close()
 
 
 # ── Normal sync run ────────────────────────────────────────────────────────────
 
 def run(verify_week: bool = False, start_date: date | None = None, end_date: date | None = None, campaign_ids: list[str] | None = None):
-    if not SESSION_FILE.exists():
+    if not PROFILE_DIR.exists() and not SESSION_FILE.exists():
         raise SystemExit(
             "No saved session found. Run setup first:\n"
             "    python ct_browser_sync.py --setup"
@@ -562,20 +567,31 @@ def run(verify_week: bool = False, start_date: date | None = None, end_date: dat
             log.info("Weekly verify mode: checking campaigns from %s to %s", monday, sunday)
 
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage"],
-        )
-        ctx = browser.new_context(
-            storage_state=str(SESSION_FILE),
-            viewport={"width": 1440, "height": 900},
-        )
+        if PROFILE_DIR.exists():
+            ctx = pw.chromium.launch_persistent_context(
+                user_data_dir=str(PROFILE_DIR),
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"],
+                viewport={"width": 1440, "height": 900},
+            )
+            _browser = None
+        else:
+            _browser = pw.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"],
+            )
+            ctx = _browser.new_context(
+                storage_state=str(SESSION_FILE),
+                viewport={"width": 1440, "height": 900},
+            )
+
         page = ctx.new_page()
         page.set_default_timeout(NAV_TIMEOUT)
 
         # Quick session check
         page.goto(CAMPAIGNS_URL, wait_until="networkidle", timeout=NAV_TIMEOUT)
         if "sso.clevertap.com" in page.url or "clevertap.com/login" in page.url:
+            # Don't delete the profile — it holds the device fingerprint we want to keep
             SESSION_FILE.unlink(missing_ok=True)
             raise SystemExit(
                 "Session expired. Re-run setup:\n"
@@ -583,7 +599,9 @@ def run(verify_week: bool = False, start_date: date | None = None, end_date: dat
             )
 
         rows = scrape_all_campaigns(page, week_range=week_range, campaign_ids=campaign_ids)
-        browser.close()
+        ctx.close()
+        if _browser:
+            _browser.close()
 
     if not rows:
         log.warning("No data scraped — nothing written to sheet.")
