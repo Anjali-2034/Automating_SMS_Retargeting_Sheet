@@ -43,22 +43,16 @@ jobs:
             echo "No profile artifact found."
           fi
 
-      - name: Bootstrap session from secret (first run only)
+      - name: Bootstrap profile from secret (first run only)
         env:
-          CT_SESSION_GZ_B64: ${{ secrets.CT_SESSION_GZ_B64 }}
           CT_PROFILE_MINIMAL_B64: ${{ secrets.CT_PROFILE_MINIMAL_B64 }}
         run: |
           if [ ! -d ct_browser_profile ]; then
-            echo "No profile artifact found — bootstrapping from secrets..."
-            if [ -n "$CT_PROFILE_MINIMAL_B64" ]; then
-              mkdir -p ct_browser_profile/Default
-              printf '%s' "$CT_PROFILE_MINIMAL_B64" | base64 -d | tar -xz -C ct_browser_profile/
-              echo "Profile restored from secret."
-            fi
-            if [ -n "$CT_SESSION_GZ_B64" ]; then
-              printf '%s' "$CT_SESSION_GZ_B64" | base64 -d | gunzip > ct_session.json
-              echo "Session JSON restored from secret ($(wc -c < ct_session.json) bytes)."
-            fi
+            echo "No profile artifact — bootstrapping from secret..."
+            printf '%s' "$CT_PROFILE_MINIMAL_B64" | base64 -d | tar -xz -C .
+            echo "Profile restored ($(du -sh ct_browser_profile | cut -f1))."
+          else
+            echo "Profile already present — skipping bootstrap."
           fi
 
       - name: Compute yesterday (IST)
@@ -89,8 +83,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ct-session
-          path: |
-            ct_session.json
-            ct_browser_profile.tar.gz
+          path: ct_browser_profile.tar.gz
           retention-days: 30
           overwrite: true
