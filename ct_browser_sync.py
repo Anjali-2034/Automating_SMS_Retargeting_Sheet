@@ -396,8 +396,9 @@ def scrape_conversion(page, campaign_id: str) -> dict:
     m = re.search(r'Incremental revenue due to this campaign[^\n]*\n(-{0,2}[\d,]+(?:\.\d+)?)', section)
     if m:
         incremental_revenue = _clean_number(m.group(1))
-    else:
-        incremental_revenue = target_group_revenue
+
+    if not incremental_revenue or incremental_revenue == 0:
+        incremental_revenue = total_revenue
 
     return {"total_revenue": total_revenue, "incremental_revenue": incremental_revenue}
 
@@ -449,6 +450,14 @@ def scrape_all_campaigns(page, week_range=None, campaign_ids: list[str] | None =
             )
         except Exception as e:
             log.error("  Failed to scrape campaign %s: %s", name, e)
+            # Recover browser from chrome-error state so next goto isn't interrupted
+            try:
+                if "chrome-error://" in page.url or "chromewebdata" in page.url:
+                    log.warning("  Browser in error state — recovering...")
+                    page.goto("about:blank", wait_until="domcontentloaded", timeout=10_000)
+                    time.sleep(1)
+            except Exception:
+                pass
 
     log.info("Scraped %d campaign(s) total.", len(rows))
 
@@ -540,6 +549,68 @@ def _setup_with_manual_mfa():
         ctx.close()
 
 
+# ── Auto re-login (session expired, profile still intact) ─────────────────────
+
+def _auto_relogin(page):
+    """
+    Re-login automatically when the session has expired due to IP change.
+
+    The browser profile preserves the device fingerprint, so CleverTap should
+    accept email + password only — no MFA OTP needed within the 30-day window.
+    If MFA is demanded anyway, the function raises SystemExit with clear guidance.
+    """
+    if not CT_LOGIN_EMAIL or not CT_LOGIN_PASSWORD:
+        raise SystemExit(
+            "Session expired and CT_LOGIN_EMAIL / CT_LOGIN_PASSWORD are not set.\n"
+            "Add them as GitHub Secrets so the script can re-login automatically."
+        )
+
+    log.info("Session expired (IP change detected) — attempting auto re-login...")
+
+    # Always navigate fresh to the login page — avoids stale page state after redirect
+    page.goto(f"{BASE_URL}/", wait_until="domcontentloaded", timeout=60_000)
+    time.sleep(2)
+
+    # Step 1 — fill email
+    page.locator('input[name="username"]').fill(CT_LOGIN_EMAIL)
+    page.locator('button[type="submit"]:not(:has-text("Google"))').first.click()
+    time.sleep(4)
+
+    # Step 2 — fill password
+    try:
+        pwd = page.locator('input[type="password"]').first
+        pwd.wait_for(state="visible", timeout=20_000)
+        pwd.fill(CT_LOGIN_PASSWORD)
+        page.locator('button[type="submit"]:not(:has-text("Google"))').first.click()
+    except PlaywrightTimeout:
+        raise SystemExit(
+            "Password field did not appear after entering email. "
+            "Check CT_LOGIN_EMAIL is correct."
+        )
+
+    # Wait up to 60 s for the dashboard URL to appear
+    log.info("Waiting for dashboard after re-login...")
+    deadline = time.time() + 60
+    while time.time() < deadline:
+        current = page.url
+        # MFA/OTP demanded — device-remember window likely expired
+        if any(k in current.lower() for k in ("mfa", "otp", "verify", "2fa")):
+            raise SystemExit(
+                "Re-login hit an MFA step — the 30-day device-remember window has expired.\n"
+                "Run locally:  python ct_browser_sync.py --setup\n"
+                "Then re-upload the browser profile secret."
+            )
+        if CT_ACCOUNT_ID and CT_ACCOUNT_ID in current:
+            log.info("Auto re-login successful.")
+            return
+        if "sso.clevertap.com" not in current and "clevertap.com/login" not in current and "clevertap.com" in current:
+            log.info("Auto re-login successful — URL: %s", current)
+            return
+        time.sleep(2)
+
+    raise SystemExit("Auto re-login timed out after 60 s — check credentials.")
+
+
 # ── Normal sync run ────────────────────────────────────────────────────────────
 
 def run(verify_week: bool = False, start_date: date | None = None, end_date: date | None = None, campaign_ids: list[str] | None = None):
@@ -588,15 +659,11 @@ def run(verify_week: bool = False, start_date: date | None = None, end_date: dat
         page = ctx.new_page()
         page.set_default_timeout(NAV_TIMEOUT)
 
-        # Quick session check
-        page.goto(CAMPAIGNS_URL, wait_until="networkidle", timeout=NAV_TIMEOUT)
+        # Quick session check — auto re-login if expired
+        page.goto(CAMPAIGNS_URL, wait_until="domcontentloaded", timeout=60_000)
         if "sso.clevertap.com" in page.url or "clevertap.com/login" in page.url:
-            # Don't delete the profile — it holds the device fingerprint we want to keep
-            SESSION_FILE.unlink(missing_ok=True)
-            raise SystemExit(
-                "Session expired. Re-run setup:\n"
-                "    python ct_browser_sync.py --setup"
-            )
+            _auto_relogin(page)
+            page.goto(CAMPAIGNS_URL, wait_until="domcontentloaded", timeout=60_000)
 
         rows = scrape_all_campaigns(page, week_range=week_range, campaign_ids=campaign_ids)
         ctx.close()

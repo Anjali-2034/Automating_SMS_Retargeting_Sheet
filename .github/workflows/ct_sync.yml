@@ -60,16 +60,15 @@ jobs:
 
       - name: Run SMS sync
         env:
-          CT_LOGIN_EMAIL: ${{ secrets.CT_LOGIN_EMAIL }}
-          CT_LOGIN_PASSWORD: ${{ secrets.CT_LOGIN_PASSWORD }}
+          CT_LOGIN_EMAIL:       ${{ secrets.CT_LOGIN_EMAIL }}
+          CT_LOGIN_PASSWORD:    ${{ secrets.CT_LOGIN_PASSWORD }}
           CLEVERTAP_ACCOUNT_ID: ${{ secrets.CLEVERTAP_ACCOUNT_ID }}
-          CLEVERTAP_REGION: ${{ secrets.CLEVERTAP_REGION }}
-          FILTER_CREATOR: ${{ secrets.FILTER_CREATOR }}
+          CLEVERTAP_REGION:     ${{ secrets.CLEVERTAP_REGION }}
+          FILTER_CREATOR:       ${{ secrets.FILTER_CREATOR }}
           GOOGLE_CREDENTIALS_JSON: credentials.json
-          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
-          WORKSHEET_GID: ${{ secrets.WORKSHEET_GID }}
+          SPREADSHEET_ID:       ${{ secrets.SPREADSHEET_ID }}
+          WORKSHEET_GID:        ${{ secrets.WORKSHEET_GID }}
         run: python ct_browser_sync.py --start $YESTERDAY --end $YESTERDAY
-
 
       - name: Pack and save updated session
         if: always()
