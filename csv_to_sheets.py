@@ -99,18 +99,23 @@ CSV_COLUMN_MAP = {
     # "delivery rate", "cost", "roi(revenue/cost)", "surplus"
 }
 
-# Maps data keys → sheet column headers (for writing)
+# Maps data keys → sheet column header(s) (for writing).
+# Values may be a string or list of strings — all aliases are matched case-insensitively.
+# This lets the same script write to both the shivam sheet and the gurkirat sheet
+# whose column names differ (e.g. "total revenue" vs "revenue").
 SHEET_COLUMN_MAP = {
     "send_date":           "date",
     "sender":              "sender",
-    "name":                "campaign name",
+    "name":                ["campaign name", "cohort"],
     "copies":              "copies",
     "qualified":           "qualified users",
     "control_group_pct":   "control group",
     "sent":                "sent",
     "delivered":           "delivered",
-    "total_revenue":       "total revenue",
-    "incremental_revenue": "incemental revenue",   # matches your sheet's spelling
+    "viewed":              "viewed",
+    "clicks":              "clicks",
+    "total_revenue":       ["total revenue", "revenue"],
+    "incremental_revenue": ["incemental revenue", "above baseline"],
 }
 
 
@@ -175,9 +180,10 @@ def get_sheet():
     creds = Credentials.from_service_account_file(GOOGLE_CREDS_FILE, scopes=GOOGLE_SCOPES)
     client = gspread.authorize(creds)
     spreadsheet = client.open_by_key(SPREADSHEET_ID)
-    ws = spreadsheet.get_worksheet_by_id(WORKSHEET_GID)
+    gid = int(os.getenv("WORKSHEET_GID", "470166044"))
+    ws = spreadsheet.get_worksheet_by_id(gid)
     if ws is None:
-        raise RuntimeError(f"Worksheet GID {WORKSHEET_GID} not found.")
+        raise RuntimeError(f"Worksheet GID {gid} not found.")
     return ws
 
 
@@ -203,8 +209,10 @@ def write_to_sheet(rows: list[dict]):
     # Map sheet column index (1-based) → data key
     writable = {}
     for idx, header in enumerate(sheet_headers, start=1):
+        h = header.strip().lower()
         for data_key, sheet_col in SHEET_COLUMN_MAP.items():
-            if header.strip().lower() == sheet_col.lower():
+            aliases = sheet_col if isinstance(sheet_col, list) else [sheet_col]
+            if h in [a.lower() for a in aliases]:
                 writable[idx] = data_key
                 break
 
@@ -293,9 +301,25 @@ def write_to_sheet(rows: list[dict]):
             return None
 
     def _resolve_date(s, min_known=None, max_known=None):
-        """Parse a date string to a date object; normalise to DD-MM-YYYY string."""
+        """Parse a date string to a date object. Returns (date_obj, original_string)."""
+        s = s.strip()
+        if not s:
+            return None, s
+
+        # Slash-separated → M/D/YYYY convention (month first, unambiguous)
+        if "/" in s:
+            parts = s.split("/")
+            if len(parts) == 3:
+                try:
+                    m_val, d_val, y = int(parts[0]), int(parts[1]), int(parts[2])
+                    return date(y, m_val, d_val), s
+                except ValueError:
+                    return None, s
+            return None, s
+
+        # Dash-separated → DD-MM-YYYY convention
         try:
-            parts = s.strip().split("-")
+            parts = s.split("-")
             if len(parts) != 3:
                 return None, s
             a, b, y = int(parts[0]), int(parts[1]), int(parts[2])
@@ -304,24 +328,23 @@ def write_to_sheet(rows: list[dict]):
 
         if a > 12:                          # unambiguous: DD-MM-YYYY
             d = _try_parse(a, b, y)
-            return d, d.strftime("%d-%m-%Y") if d else (None, s)
+            return (d, s) if d else (None, s)
 
         if b > 12:                          # unambiguous: MM-DD-YYYY (legacy)
             d = _try_parse_mmdd(a, b, y)
-            return d, d.strftime("%d-%m-%Y") if d else (None, s)
+            return (d, s) if d else (None, s)
 
         # Ambiguous – both parts ≤ 12
-        d_ddmm = _try_parse(a, b, y)       # DD-MM interpretation
-        d_mmdd = _try_parse_mmdd(a, b, y)  # MM-DD interpretation
+        d_ddmm = _try_parse(a, b, y)
+        d_mmdd = _try_parse_mmdd(a, b, y)
 
         if d_ddmm is None and d_mmdd is None:
             return None, s
         if d_ddmm is None:
-            return d_mmdd, d_mmdd.strftime("%d-%m-%Y")
+            return d_mmdd, s
         if d_mmdd is None:
-            return d_ddmm, d_ddmm.strftime("%d-%m-%Y")
+            return d_ddmm, s
 
-        # Use the known date range to pick the right interpretation
         if min_known and max_known:
             in_range_ddmm = min_known <= d_ddmm <= max_known
             in_range_mmdd = min_known <= d_mmdd <= max_known
@@ -330,15 +353,29 @@ def write_to_sheet(rows: list[dict]):
             elif in_range_mmdd and not in_range_ddmm:
                 chosen = d_mmdd
             else:
-                chosen = min(d_ddmm, d_mmdd)   # both/neither in range → take earlier
+                chosen = min(d_ddmm, d_mmdd)
         else:
             chosen = min(d_ddmm, d_mmdd)
 
-        return chosen, chosen.strftime("%d-%m-%Y")
+        return chosen, s
+
+    def _fmt_date(d):
+        """Format a date object to match the sheet's existing date style."""
+        if detected_sep == "/":
+            return f"{d.month}/{d.day}/{d.year}"
+        return d.strftime("%d-%m-%Y")
 
     if date_col_idx:
         all_values = ws.get_all_values()
         data_rows = all_values[1:]          # skip header row
+
+        # Detect separator style from existing data so we write dates to match
+        detected_sep = "-"
+        for _r in data_rows:
+            _v = _r[date_col_idx - 1].strip() if date_col_idx - 1 < len(_r) else ""
+            if "/" in _v:
+                detected_sep = "/"
+                break
 
         if len(data_rows) > 1:
             date_col_0 = date_col_idx - 1  # 0-based
@@ -348,6 +385,11 @@ def write_to_sheet(rows: list[dict]):
             for r in data_rows:
                 s = r[date_col_0].strip() if date_col_0 < len(r) else ""
                 if not s:
+                    continue
+                if "/" in s:
+                    d, _ = _resolve_date(s)
+                    if d:
+                        known_dates.append(d)
                     continue
                 try:
                     parts = s.split("-")
@@ -386,16 +428,16 @@ def write_to_sheet(rows: list[dict]):
                     "values": col_vals,
                 })
 
-            # Also rewrite the date column itself with normalised DD-MM-YYYY strings
+            # Also rewrite the date column itself normalised to the sheet's date style
             date_cl = _col_letter(date_col_idx)
             sort_updates.append({
                 "range":  f"{date_cl}2:{date_cl}{1 + len(resolved)}",
-                "values": [[norm] for _, norm, _ in resolved],
+                "values": [[_fmt_date(d) if d != date.min else ""] for d, _, _ in resolved],
             })
 
             if sort_updates:
                 ws.batch_update(sort_updates, value_input_option="USER_ENTERED")
-                log.info("Sheet sorted by date (asc) and all dates normalised to DD-MM-YYYY.")
+                log.info("Sheet sorted by date (asc) and all dates normalised (sep=%r).", detected_sep)
 
     log.info("Done: %d new row(s) added, %d updated. Formula columns untouched.",
              new_count, updated_count)

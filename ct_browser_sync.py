@@ -117,6 +117,61 @@ def parse_list_date(start_time_raw: str) -> date | None:
     return None
 
 
+# ── Channel filter (sliders icon panel on campaigns list page) ─────────────────
+
+def _apply_channel_filter(page, channel_name: str, creator_email: str | None = None):
+    """Open the filter panel, select channel + creator, and apply."""
+    try:
+        page.locator(".ct-filter").first.click()
+        page.wait_for_function(
+            "document.body.innerText.includes('Filter Campaigns')",
+            timeout=10_000,
+        )
+        time.sleep(1.5)
+
+        # ── Channel ───────────────────────────────────────────────────────────
+        page.evaluate('''() => {
+            const slot = document.querySelector(".ct-selectbox[placeholder='Select channel'] .v-input__slot");
+            if (slot) slot.dispatchEvent(new MouseEvent("click", {bubbles: true}));
+        }''')
+        time.sleep(1.5)
+        page.locator(f".v-menu__content .v-list-item:has-text('{channel_name}')").first.click()
+        time.sleep(1.5)   # let channel menu fully close before opening creator menu
+        log.info("Channel filter set: %s", channel_name)
+
+        # ── Created by ────────────────────────────────────────────────────────
+        if creator_email:
+            page.evaluate('''() => {
+                const slot = document.querySelector(".ct-autocomplete[placeholder='Select an email'] .v-input__slot");
+                if (slot) slot.dispatchEvent(new MouseEvent("click", {bubbles: true}));
+            }''')
+            # Wait until THIS specific email appears (not just any menu item)
+            page.wait_for_function(
+                f'''() => Array.from(document.querySelectorAll(".v-menu__content .v-list-item"))
+                    .some(el => el.innerText.includes("{creator_email}"))''',
+                timeout=8_000,
+            )
+            page.locator(f".v-menu__content .v-list-item:has-text('{creator_email}')").first.click(timeout=5_000)
+            time.sleep(1)
+            log.info("Creator filter set: %s", creator_email)
+
+        page.locator("button:has-text('Apply')").click()
+        time.sleep(3)
+        log.info("Filters applied — channel=%s  creator=%s", channel_name, creator_email or "any")
+    except Exception as e:
+        log.warning("Could not apply filters: %s", e)
+        # Dismiss the filter panel so it doesn't block subsequent interactions
+        try:
+            page.locator("button:has-text('Cancel')").click(timeout=3_000)
+            time.sleep(1)
+        except Exception:
+            try:
+                page.keyboard.press("Escape")
+                time.sleep(1)
+            except Exception:
+                pass
+
+
 # ── Campaign list scraping ─────────────────────────────────────────────────────
 
 def _set_date_filter(page, start: date, end: date):
@@ -192,6 +247,7 @@ def get_campaign_list(page, week_range: tuple[date, date] | None = None) -> list
         return []
 
     time.sleep(2)
+    _apply_channel_filter(page, "SMS", creator_email=FILTER_CREATOR)
 
     if not week_range:
         campaigns = _extract_campaigns_from_page(page)
@@ -311,7 +367,7 @@ def scrape_overview(page, campaign_id: str) -> dict:
 def scrape_stats(page, campaign_id: str) -> dict:
     """
     Scrape Stats tab:
-      - qualified, sent, delivered, control_group_count
+      - qualified, sent, delivered, viewed, clicks, control_group_count
     """
     url = f"{BASE_URL}/{CT_ACCOUNT_ID}/campaigns/campaign/{campaign_id}/report/stats"
     page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
@@ -321,7 +377,7 @@ def scrape_stats(page, campaign_id: str) -> dict:
 
     text = page.inner_text("body")
     idx = text.find("Qualified:")
-    section = text[idx:idx + 500] if idx >= 0 else text
+    section = text[idx:idx + 1000] if idx >= 0 else text
 
     qualified = ""
     m = re.search(r'Qualified:\s*([\d,]+)', section)
@@ -339,6 +395,20 @@ def scrape_stats(page, campaign_id: str) -> dict:
     if m:
         delivered = _clean_number(m.group(1))
 
+    # Viewed — "Viewed ⓘ\n4.81%\n21,712"
+    viewed = ""
+    m = re.search(r'Viewed[^\n]*\n[\d.]+%\n([\d,]+)', section)
+    if m:
+        viewed = _clean_number(m.group(1))
+
+    # Clicks — "Clicks ⓘ\n0.05%\n211"
+    clicks = ""
+    m = re.search(r'Clicks[^\n]*\n[\d.]+%\n([\d,]+)', section)
+    if not m:
+        m = re.search(r'Clicked[^\n]*\n[\d.]+%\n([\d,]+)', section)
+    if m:
+        clicks = _clean_number(m.group(1))
+
     control_group_count = ""
     m = re.search(r'Control group:\s*([\d,]+)', section)
     if m:
@@ -348,6 +418,8 @@ def scrape_stats(page, campaign_id: str) -> dict:
         "qualified": qualified,
         "sent": sent,
         "delivered": delivered,
+        "viewed": viewed,
+        "clicks": clicks,
         "control_group_count": control_group_count,
     }
 
@@ -613,7 +685,7 @@ def _auto_relogin(page):
 
 # ── Normal sync run ────────────────────────────────────────────────────────────
 
-def run(verify_week: bool = False, start_date: date | None = None, end_date: date | None = None, campaign_ids: list[str] | None = None):
+def run(verify_week: bool = False, start_date: date | None = None, end_date: date | None = None, campaign_ids: list[str] | None = None, dry_run: bool = False):
     if not PROFILE_DIR.exists() and not SESSION_FILE.exists():
         raise SystemExit(
             "No saved session found. Run setup first:\n"
@@ -674,6 +746,12 @@ def run(verify_week: bool = False, start_date: date | None = None, end_date: dat
         log.warning("No data scraped — nothing written to sheet.")
         return
 
+    if dry_run:
+        log.info("=== DRY RUN — would write %d row(s): ===", len(rows))
+        for r in rows:
+            log.info("  %s", r)
+        return
+
     write_to_sheet(rows)
     log.info("=== Sync complete ===")
 
@@ -707,7 +785,27 @@ def main():
         metavar="ID1,ID2,...",
         help="Comma-separated campaign IDs to scrape directly (bypasses list page)",
     )
+    parser.add_argument(
+        "--creator", type=str, default=None,
+        metavar="EMAIL",
+        help="Override FILTER_CREATOR (e.g. gurkirat@goodeducator.com)",
+    )
+    parser.add_argument(
+        "--worksheet-gid", type=int, default=None,
+        metavar="GID",
+        help="Override WORKSHEET_GID for the target sheet tab",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Scrape and log data but do not write to the sheet",
+    )
     args = parser.parse_args()
+
+    if args.creator:
+        global FILTER_CREATOR
+        FILTER_CREATOR = args.creator
+    if args.worksheet_gid is not None:
+        os.environ["WORKSHEET_GID"] = str(args.worksheet_gid)
 
     if args.setup:
         _setup_with_manual_mfa()
@@ -715,7 +813,7 @@ def main():
         start_date   = date.fromisoformat(args.start) if args.start else None
         end_date     = date.fromisoformat(args.end)   if args.end   else None
         campaign_ids = [i.strip() for i in args.scrape_ids.split(",")] if args.scrape_ids else None
-        run(verify_week=args.verify_week, start_date=start_date, end_date=end_date, campaign_ids=campaign_ids)
+        run(verify_week=args.verify_week, start_date=start_date, end_date=end_date, campaign_ids=campaign_ids, dry_run=args.dry_run)
 
 
 if __name__ == "__main__":
