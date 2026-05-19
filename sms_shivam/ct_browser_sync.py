@@ -38,7 +38,7 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 
 from csv_to_sheets import write_to_sheet
 
-load_dotenv()
+load_dotenv(Path(__file__).parent.parent / ".env")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -58,8 +58,8 @@ BASE_URL      = f"https://{CT_REGION}.dashboard.clevertap.com"
 CAMPAIGNS_URL = f"{BASE_URL}/{CT_ACCOUNT_ID}/campaigns/sms"
 
 NAV_TIMEOUT  = 30_000
-SESSION_FILE = Path(__file__).parent / "ct_session.json"   # legacy / CI fallback
-PROFILE_DIR  = Path(__file__).parent / "ct_browser_profile"
+SESSION_FILE = Path(__file__).parent.parent / "ct_session.json"   # legacy / CI fallback
+PROFILE_DIR  = Path(__file__).parent.parent / "ct_browser_profile"
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -732,10 +732,10 @@ def run(verify_week: bool = False, start_date: date | None = None, end_date: dat
         page.set_default_timeout(NAV_TIMEOUT)
 
         # Quick session check — auto re-login if expired
-        page.goto(CAMPAIGNS_URL, wait_until="domcontentloaded", timeout=60_000)
+        page.goto(CAMPAIGNS_URL, wait_until="domcontentloaded", timeout=120_000)
         if "sso.clevertap.com" in page.url or "clevertap.com/login" in page.url:
             _auto_relogin(page)
-            page.goto(CAMPAIGNS_URL, wait_until="domcontentloaded", timeout=60_000)
+            page.goto(CAMPAIGNS_URL, wait_until="domcontentloaded", timeout=120_000)
 
         rows = scrape_all_campaigns(page, week_range=week_range, campaign_ids=campaign_ids)
         ctx.close()

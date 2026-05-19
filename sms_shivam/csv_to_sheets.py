@@ -18,6 +18,7 @@ What this script does:
 """
 
 import os
+from pathlib import Path
 import sys
 import csv
 import logging
@@ -26,7 +27,7 @@ from datetime import datetime, date
 from dotenv import load_dotenv
 from google.oauth2.service_account import Credentials
 
-load_dotenv()
+load_dotenv(Path(__file__).parent.parent / ".env")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,7 +37,7 @@ log = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-GOOGLE_CREDS_FILE = os.getenv("GOOGLE_CREDENTIALS_JSON", "credentials.json")
+GOOGLE_CREDS_FILE = os.getenv("GOOGLE_CREDENTIALS_JSON", str(Path(__file__).parent.parent / "credentials.json"))
 SPREADSHEET_ID    = os.getenv("SPREADSHEET_ID")
 WORKSHEET_GID     = int(os.getenv("WORKSHEET_GID", "470166044"))
 

@@ -68,7 +68,7 @@ jobs:
           GOOGLE_CREDENTIALS_JSON: credentials.json
           SPREADSHEET_ID:       ${{ secrets.SPREADSHEET_ID }}
           WORKSHEET_GID:        ${{ secrets.WORKSHEET_GID }}
-        run: python ct_browser_sync.py --start $YESTERDAY --end $YESTERDAY
+        run: python sms_shivam/ct_browser_sync.py --start $YESTERDAY --end $YESTERDAY
 
       - name: Pack and save updated session
         if: always()
