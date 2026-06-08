@@ -105,10 +105,10 @@ def parse_list_date(start_time_raw: str) -> date | None:
 
 def _apply_channel_filter(page, channel_name: str, creator_email: str | None = None):
     try:
-        page.locator(".ct-filter").first.click()
+        page.locator(".ct-filter").first.click(timeout=15_000)
         page.wait_for_function(
             "document.body.innerText.includes('Filter Campaigns')",
-            timeout=10_000,
+            timeout=15_000,
         )
         time.sleep(1.5)
 
@@ -155,7 +155,7 @@ def _apply_channel_filter(page, channel_name: str, creator_email: str | None = N
 
 def _set_date_filter(page, start: date, end: date):
     try:
-        page.locator(".lp-daterangepicker").click()
+        page.locator(".lp-daterangepicker").first.click()
         page.wait_for_selector(".lp-daterangepicker-dropdown", timeout=10_000)
         time.sleep(1)
 

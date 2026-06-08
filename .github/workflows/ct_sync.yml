@@ -3,8 +3,11 @@ name: CT Sheets Sync
 on:
   schedule:
     - cron: '30 18 * * *'   # 12:00 AM IST (18:30 UTC)
-    - cron: '30 4 * * *'    # 10:00 AM IST (04:30 UTC)
-  workflow_dispatch:         # manual trigger from GitHub UI
+  workflow_dispatch:
+    inputs:
+      date:
+        description: 'Date to sync YYYY-MM-DD (leave blank for yesterday IST)'
+        required: false
 
 jobs:
   sync:
@@ -26,63 +29,72 @@ jobs:
       - name: Write Google credentials
         run: echo '${{ secrets.GOOGLE_CREDENTIALS_JSON }}' > credentials.json
 
-      - name: Restore session
-        uses: actions/download-artifact@v4
+      # Rolling cache key — a new entry is written every run so the next
+      # run always restores the most recently saved profile (with fresh cookies).
+      - name: Restore browser profile
+        id: cache-profile
+        uses: actions/cache@v4
         with:
-          name: ct-session
-          path: .
-        continue-on-error: true
+          path: ct_browser_profile
+          key: ct-profile-${{ github.run_id }}
+          restore-keys: ct-profile-
 
-      - name: Unpack profile artifact
-        run: |
-          if [ -f ct_browser_profile.tar.gz ]; then
-            echo "Unpacking browser profile..."
-            tar -xzf ct_browser_profile.tar.gz
-            echo "Profile restored ($(du -sh ct_browser_profile | cut -f1))."
-          else
-            echo "No profile artifact found."
-          fi
-
+      # Only runs on the very first execution (empty cache, no prior runs).
       - name: Bootstrap profile from secret (first run only)
+        if: steps.cache-profile.outputs.cache-hit != 'true'
         env:
           CT_PROFILE_MINIMAL_B64: ${{ secrets.CT_PROFILE_MINIMAL_B64 }}
         run: |
-          if [ ! -d ct_browser_profile ]; then
-            echo "No profile artifact — bootstrapping from secret..."
-            printf '%s' "$CT_PROFILE_MINIMAL_B64" | base64 -d | tar -xz -C .
-            echo "Profile restored ($(du -sh ct_browser_profile | cut -f1))."
-          else
-            echo "Profile already present — skipping bootstrap."
+          if [ -z "$CT_PROFILE_MINIMAL_B64" ]; then
+            echo "ERROR: CT_PROFILE_MINIMAL_B64 secret is not set."
+            exit 1
           fi
+          echo "Cache miss — bootstrapping profile from secret..."
+          printf '%s' "$CT_PROFILE_MINIMAL_B64" | base64 -d | tar -xz -C .
+          echo "Profile restored: $(du -sh ct_browser_profile | cut -f1)"
 
-      - name: Compute yesterday (IST)
-        run: echo "YESTERDAY=$(TZ='Asia/Kolkata' date -d 'yesterday' '+%Y-%m-%d')" >> $GITHUB_ENV
-
-      - name: Run SMS sync
-        env:
-          CT_LOGIN_EMAIL:       ${{ secrets.CT_LOGIN_EMAIL }}
-          CT_LOGIN_PASSWORD:    ${{ secrets.CT_LOGIN_PASSWORD }}
-          CLEVERTAP_ACCOUNT_ID: ${{ secrets.CLEVERTAP_ACCOUNT_ID }}
-          CLEVERTAP_REGION:     ${{ secrets.CLEVERTAP_REGION }}
-          FILTER_CREATOR:       ${{ secrets.FILTER_CREATOR }}
-          GOOGLE_CREDENTIALS_JSON: credentials.json
-          SPREADSHEET_ID:       ${{ secrets.SPREADSHEET_ID }}
-          WORKSHEET_GID:        ${{ secrets.WORKSHEET_GID }}
-        run: python sms_shivam/ct_browser_sync.py --start $YESTERDAY --end $YESTERDAY
-
-      - name: Pack and save updated session
-        if: always()
+      - name: Compute sync date
         run: |
-          if [ -d ct_browser_profile ]; then
-            tar -czf ct_browser_profile.tar.gz ct_browser_profile/
-            echo "Profile packed ($(du -sh ct_browser_profile.tar.gz | cut -f1))."
+          if [ -n "${{ github.event.inputs.date }}" ]; then
+            echo "SYNC_DATE=${{ github.event.inputs.date }}" >> $GITHUB_ENV
+          else
+            echo "SYNC_DATE=$(TZ='Asia/Kolkata' date -d 'yesterday' '+%Y-%m-%d')" >> $GITHUB_ENV
           fi
+          echo "Syncing date: $SYNC_DATE"
 
-      - name: Save updated session
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ct-session
-          path: ct_browser_profile.tar.gz
-          retention-days: 30
-          overwrite: true
+      - name: SMS / Shivam sync
+        continue-on-error: true
+        env:
+          CT_LOGIN_EMAIL:          ${{ secrets.CT_LOGIN_EMAIL }}
+          CT_LOGIN_PASSWORD:       ${{ secrets.CT_LOGIN_PASSWORD }}
+          CLEVERTAP_ACCOUNT_ID:    ${{ secrets.CLEVERTAP_ACCOUNT_ID }}
+          CLEVERTAP_REGION:        ${{ secrets.CLEVERTAP_REGION }}
+          FILTER_CREATOR:          ${{ secrets.FILTER_CREATOR }}
+          GOOGLE_CREDENTIALS_JSON: credentials.json
+          SPREADSHEET_ID:          ${{ secrets.SPREADSHEET_ID }}
+          WORKSHEET_GID:           ${{ secrets.WORKSHEET_GID }}
+        run: python sms_shivam/ct_browser_sync.py --start $SYNC_DATE --end $SYNC_DATE
+
+      - name: SMS / Gurkirat sync
+        continue-on-error: true
+        env:
+          CT_LOGIN_EMAIL:          ${{ secrets.CT_LOGIN_EMAIL }}
+          CT_LOGIN_PASSWORD:       ${{ secrets.CT_LOGIN_PASSWORD }}
+          CLEVERTAP_ACCOUNT_ID:    ${{ secrets.CLEVERTAP_ACCOUNT_ID }}
+          CLEVERTAP_REGION:        ${{ secrets.CLEVERTAP_REGION }}
+          GOOGLE_CREDENTIALS_JSON: credentials.json
+          SPREADSHEET_ID:          ${{ secrets.SPREADSHEET_ID }}
+        run: bash sms_gurkirat/run.sh --start $SYNC_DATE --end $SYNC_DATE
+
+      - name: WhatsApp sync
+        continue-on-error: true
+        env:
+          CT_LOGIN_EMAIL:          ${{ secrets.CT_LOGIN_EMAIL }}
+          CT_LOGIN_PASSWORD:       ${{ secrets.CT_LOGIN_PASSWORD }}
+          CLEVERTAP_ACCOUNT_ID:    ${{ secrets.CLEVERTAP_ACCOUNT_ID }}
+          CLEVERTAP_REGION:        ${{ secrets.CLEVERTAP_REGION }}
+          WA_FILTER_CREATOR:       ${{ secrets.WA_FILTER_CREATOR }}
+          GOOGLE_CREDENTIALS_JSON: credentials.json
+          SPREADSHEET_ID:          ${{ secrets.SPREADSHEET_ID }}
+          WA_WORKSHEET_GID:        ${{ secrets.WA_WORKSHEET_GID }}
+        run: python wa_browser_sync.py --start $SYNC_DATE --end $SYNC_DATE
