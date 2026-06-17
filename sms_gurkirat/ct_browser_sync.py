@@ -155,7 +155,12 @@ def _apply_channel_filter(page, channel_name: str, creator_email: str | None = N
 
 def _set_date_filter(page, start: date, end: date):
     try:
-        page.locator(".lp-daterangepicker").first.click()
+        # Target the TIME PERIOD (Campaigns Created) picker — not the STATS PERIOD one
+        page.evaluate('''() => {
+            const el = document.querySelector(".campaign-time-period-filter .lp-daterangepicker")
+                     || document.querySelector(".lp-daterangepicker");
+            if (el) el.dispatchEvent(new MouseEvent("click", {bubbles: true, cancelable: true}));
+        }''')
         page.wait_for_selector(".lp-daterangepicker-dropdown", timeout=10_000)
         time.sleep(1)
 
@@ -182,7 +187,7 @@ def _extract_campaigns_from_page(page) -> list[dict]:
         const rows = document.querySelectorAll(".lp-table-row.bordered");
         const results = [];
         for (const row of rows) {{
-            if (!row.innerText.includes("Created by: {FILTER_CREATOR}")) continue;
+            if (!row.innerText.includes("{FILTER_CREATOR}")) continue;
             const linkEl = row.querySelector("a.campaign-details-link");
             if (!linkEl) continue;
             const name = linkEl.innerText.trim();
@@ -209,7 +214,6 @@ def get_campaign_list(page, week_range: tuple[date, date] | None = None) -> list
         return []
 
     time.sleep(2)
-    _apply_channel_filter(page, "SMS", creator_email=FILTER_CREATOR)
 
     if not week_range:
         campaigns = _extract_campaigns_from_page(page)
@@ -221,6 +225,14 @@ def get_campaign_list(page, week_range: tuple[date, date] | None = None) -> list
 
     current = start
     while current <= end:
+        page.goto(CAMPAIGNS_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
+        try:
+            page.wait_for_selector(".lp-table-row.bordered", timeout=20_000)
+        except PlaywrightTimeout:
+            log.warning("  %s: campaign list did not load, skipping day", current.strftime("%d-%m-%Y"))
+            current += timedelta(days=1)
+            continue
+        time.sleep(2)
         _set_date_filter(page, current, current)
         day_campaigns = _extract_campaigns_from_page(page)
         new = [c for c in day_campaigns if c["campaignId"] not in all_campaigns]

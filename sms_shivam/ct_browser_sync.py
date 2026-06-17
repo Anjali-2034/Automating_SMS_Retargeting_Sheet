@@ -122,10 +122,10 @@ def parse_list_date(start_time_raw: str) -> date | None:
 def _apply_channel_filter(page, channel_name: str, creator_email: str | None = None):
     """Open the filter panel, select channel + creator, and apply."""
     try:
-        page.locator(".ct-filter").first.click()
+        page.locator(".ct-filter").first.click(timeout=15_000)
         page.wait_for_function(
             "document.body.innerText.includes('Filter Campaigns')",
-            timeout=10_000,
+            timeout=15_000,
         )
         time.sleep(1.5)
 
@@ -181,7 +181,12 @@ def _set_date_filter(page, start: date, end: date):
     ALL campaigns in range are loaded — no scroll-limit surprises.
     """
     try:
-        page.locator(".lp-daterangepicker").click()
+        # Target the TIME PERIOD (Campaigns Created) picker — not the STATS PERIOD one
+        page.evaluate('''() => {
+            const el = document.querySelector(".campaign-time-period-filter .lp-daterangepicker")
+                     || document.querySelector(".lp-daterangepicker");
+            if (el) el.dispatchEvent(new MouseEvent("click", {bubbles: true, cancelable: true}));
+        }''')
         page.wait_for_selector(".lp-daterangepicker-dropdown", timeout=10_000)
         time.sleep(1)
 
@@ -213,7 +218,7 @@ def _extract_campaigns_from_page(page) -> list[dict]:
         const rows = document.querySelectorAll(".lp-table-row.bordered");
         const results = [];
         for (const row of rows) {{
-            if (!row.innerText.includes("Created by: {FILTER_CREATOR}")) continue;
+            if (!row.innerText.includes("{FILTER_CREATOR}")) continue;
             const linkEl = row.querySelector("a.campaign-details-link");
             if (!linkEl) continue;
             const name = linkEl.innerText.trim();
@@ -247,19 +252,28 @@ def get_campaign_list(page, week_range: tuple[date, date] | None = None) -> list
         return []
 
     time.sleep(2)
-    _apply_channel_filter(page, "SMS", creator_email=FILTER_CREATOR)
 
     if not week_range:
         campaigns = _extract_campaigns_from_page(page)
         log.info("Found %d campaign(s) by %s", len(campaigns), FILTER_CREATOR)
         return campaigns
 
-    # Day-by-day iteration — each day's list is small enough to fully load
+    # Day-by-day iteration — each day's list is small enough to fully load.
+    # Reload the page each day so the DOM is always clean (avoids split-pane
+    # overlay or stale state from the previous iteration breaking the date picker).
     start, end = week_range
     all_campaigns: dict[str, dict] = {}   # keyed by campaignId to dedup
 
     current = start
     while current <= end:
+        page.goto(CAMPAIGNS_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
+        try:
+            page.wait_for_selector(".lp-table-row.bordered", timeout=20_000)
+        except PlaywrightTimeout:
+            log.warning("  %s: campaign list did not load, skipping day", current.strftime("%d-%m-%Y"))
+            current += timedelta(days=1)
+            continue
+        time.sleep(2)
         _set_date_filter(page, current, current)
         day_campaigns = _extract_campaigns_from_page(page)
         new = [c for c in day_campaigns if c["campaignId"] not in all_campaigns]
